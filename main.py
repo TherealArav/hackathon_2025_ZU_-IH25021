@@ -6,7 +6,10 @@ import numpy as np
 import easyocr 
 from gtts import gTTS 
 from io import BytesIO 
+from googletrans import Translator # <-- NEW IMPORT
 
+
+# --- Helper Functions ---
 
 @st.cache_resource
 def get_ocr_reader():
@@ -17,57 +20,69 @@ def get_ocr_reader():
 def extract_raw_text(uploaded_file):
     """
     Performs OCR and returns only the raw extracted text string.
-
-    Args:
-        uploaded_file: The file object from Streamlit's st.file_uploader.
-    
-    Returns:
-        str: The extracted text, combined by newlines.
     """
     reader = get_ocr_reader()
-    # Open the image using PIL and convert to NumPy array
     image_pil = Image.open(uploaded_file)
     image_np = np.array(image_pil)
-    
-    # Perform OCR, returning only the text strings (detail=0)
     results = reader.readtext(image_np, detail=0) 
     return "\n".join(results) 
 
 
-def generate_audio(text_to_read):
+def generate_audio(text_to_read, language='en'): 
     """
-    Generates audio bytes from text using gTTS.
+    Generates audio bytes from text using gTTS for a specific language.
     """
     if not text_to_read:
         return None
         
-    st.toast("Generating speech...", icon="🔊")
+    st.toast(f"Generating {language.upper()} speech...", icon="🔊")
     try:
-        tts = gTTS(text=text_to_read, lang='en')
+        # gTTS uses the language parameter
+        tts = gTTS(text=text_to_read, lang=language) 
         mp3_fp = BytesIO()
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
         return mp3_fp.read()
     except Exception as e:
-        st.error(f"Error generating TTS audio: {e}")
+        st.error(f"Error generating TTS audio in {language.upper()}: {e}")
         return None
 
+def translate_text(text, dest_lang='ar'): 
+    """Translates text using googletrans."""
+    if not text:
+        return ""
+    try:
+        # Use the global translator instance
+        translation = translator.translate(text, dest=dest_lang)
+        return translation.text
+    except Exception as e:
+        st.error(f"Translation Error: {e}")
+        return "Translation failed."
+
+
+# --- OCR & Translation Pipeline (Orchestration) ---
 
 def run_ocr_pipeline(uploaded_file):
     """
-    Orchestrates the OCR extraction, handles state, formatting, and errors.
+    Orchestrates the OCR extraction, translation, state updates, and error handling.
     """
 
     st.session_state['is_processing'] = True
     st.session_state['ocr_result'] = None
     st.session_state['raw_ocr_text'] = None 
-    st.toast("Starting EasyOCR extraction...", icon="🔍")
+    st.session_state['arabic_text'] = None     
+    st.session_state['audio_bytes'] = None      # Clear audio on new run
+    st.toast("Starting EasyOCR and Translation...", icon="🔍")
 
     try:
+        # 1. OCR Extraction (English)
         extracted_text = extract_raw_text(uploaded_file)
-        final_output = f"""
-## 📝 Extracted Text (EasyOCR Result)
+        
+        # 2. Translation (Arabic)
+        arabic_translation = translate_text(extracted_text, dest_lang='ar')
 
+        # 3. Format English Output for Display
+        final_english_output = f"""
 **Source File:** `{uploaded_file.name}`
 
 ---
@@ -80,17 +95,21 @@ def run_ocr_pipeline(uploaded_file):
 
 Processed successfully on: {time.ctime()}
 """
-        st.session_state['raw_ocr_text'] = extracted_text # Store clean text for TTS
-        st.session_state['ocr_result'] = final_output     # Store formatted text for display
-        st.toast("OCR completed! Text extracted successfully.", icon="✅")
+        # 4. Update session states
+        st.session_state['raw_ocr_text'] = extracted_text      # English clean text
+        st.session_state['arabic_text'] = arabic_translation   # Arabic clean text
+        st.session_state['ocr_result'] = final_english_output  # English formatted text (for display)
+        st.toast("OCR and Translation completed!", icon="✅")
 
     except Exception as e:
-        st.error(f"An error occurred during OCR processing with EasyOCR: {e}")
-        st.session_state['ocr_result'] = f"Error: Could not process image. {e}"
+        st.error(f"An error occurred during pipeline execution: {e}")
+        st.session_state['ocr_result'] = f"Error: Could not process. {e}"
 
     finally:
         st.session_state['is_processing'] = False
 
+
+# --- Main Application Logic ---
 
 st.set_page_config(
     page_title="Fresh-Gens",
@@ -98,20 +117,39 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- Callbacks for TTS Button ---
 
 def tts_callback():
     """
-    Callback function for the TTS button.
-    Now uses the clean 'raw_ocr_text' state directly.
+    Callback function for the TTS button. Uses the selected language and corresponding text.
     """
-    raw_text = st.session_state.get('raw_ocr_text')
+    # Get the value from the selectbox
+    selected_lang = st.session_state.get('tts_language_select') 
     
-    if raw_text:
-        audio_data = generate_audio(raw_text)
+    if selected_lang == 'English':
+        raw_text = st.session_state.get('raw_ocr_text')
+        lang_code = 'en'
+    elif selected_lang == 'Arabic':
+        raw_text = st.session_state.get('arabic_text')
+        lang_code = 'ar'
+    else:
+        st.error("Invalid language selected for TTS.")
+        return
+
+    # Generate and store audio only if text is available
+    if raw_text and raw_text not in ["Translation failed.", ""]:
+        audio_data = generate_audio(raw_text, language=lang_code)
         if audio_data:
             st.session_state['audio_bytes'] = audio_data
     else:
-        st.error("Cannot read text: No raw OCR result found in state.")
+        st.error(f"Cannot read text: No valid {selected_lang} text found.")
+
+
+# Initialize Translator instance globally
+translator = Translator() 
+
+
+# --- State Initialization ---
 
 if 'uploaded_file' not in st.session_state:
     st.session_state['uploaded_file'] = None
@@ -123,13 +161,15 @@ if 'audio_bytes' not in st.session_state:
     st.session_state['audio_bytes'] = None
 if 'raw_ocr_text' not in st.session_state:
     st.session_state['raw_ocr_text'] = None
+if 'arabic_text' not in st.session_state:  # <-- NEW STATE INIT
+    st.session_state['arabic_text'] = None
+if 'tts_language_select' not in st.session_state: # <-- NEW STATE INIT for selectbox
+    st.session_state['tts_language_select'] = 'English'
 
+# --- UI Components ---
 
-
-# UI Components ---
-
-st.title("🖼️ EasyOCR & 🔊 Text-to-Speech App")
-st.subheader("Extract text from an image and listen to it using open-source libraries.")
+st.title("🖼️ EasyOCR & 🔊 Multi-Lingual TTS App")
+st.subheader("Extract text from an image, translate to Arabic, and listen in both languages.")
 
 st.markdown("---")
 
@@ -146,13 +186,15 @@ if uploaded_file is not None and uploaded_file != st.session_state['uploaded_fil
     st.session_state['uploaded_file'] = uploaded_file
     st.session_state['ocr_result'] = None
     st.session_state['raw_ocr_text'] = None
+    st.session_state['arabic_text'] = None      # Clear new state
     st.session_state['audio_bytes'] = None
     st.toast(f"File uploaded successfully: {uploaded_file.name}", icon="✅")
 
 elif uploaded_file is None and st.session_state['uploaded_file'] is not None:
     st.session_state['uploaded_file'] = None
     st.session_state['ocr_result'] = None
-    st.session_state['raw_ocr_text'] = None # Clear new state
+    st.session_state['raw_ocr_text'] = None     # Clear new state
+    st.session_state['arabic_text'] = None      # Clear new state
     st.session_state['audio_bytes'] = None 
     st.toast("File cleared from session.", icon="🗑️")
 
@@ -172,13 +214,21 @@ if file_to_display:
     with meta_col:
         st.subheader("Controls")
         
-        # OCR Button - Now calls the refined pipeline
-        if st.button("Extract Text (EasyOCR)", type="primary", disabled=st.session_state['is_processing']):
+        # OCR Button
+        if st.button("Extract & Translate", type="primary", disabled=st.session_state['is_processing']):
             run_ocr_pipeline(file_to_display)
         
-        # TTS Button - Enabled only if OCR is not processing AND we have raw text
+        # TTS Language Selector
         tts_disabled = st.session_state['is_processing'] or not st.session_state['raw_ocr_text']
+        
+        st.selectbox(
+            "Select TTS Language:",
+            ('English', 'Arabic'),
+            key='tts_language_select', # This key is used in the tts_callback
+            disabled=tts_disabled,
+        )
 
+        # TTS Button
         if st.button("Read Text Aloud (TTS)", disabled=tts_disabled, on_click=tts_callback):
             pass 
             
@@ -192,31 +242,45 @@ if file_to_display:
     st.markdown("## Extracted Text Output")
 
     if st.session_state['is_processing']:
-        st.info("EasyOCR is analyzing the image for text content...")
-        with st.spinner('Processing image with deep learning model...'):
+        st.info("Processing image and performing translation...")
+        with st.spinner('Running OCR and Translation...'):
             time.sleep(0.1) 
     elif st.session_state['ocr_result']:
-        # Display the extracted text using markdown
-        st.markdown(st.session_state['ocr_result'])
+        # Use tabs for clean multi-lingual display
+        tab1, tab2 = st.tabs(["English Output", "Arabic Translation (العربية)"])
         
-        # Audio Player
+        with tab1:
+            st.subheader("English Extracted Text")
+            st.markdown(st.session_state['ocr_result']) # English formatted text
+        
+        with tab2:
+            st.subheader("Translated Arabic Text")
+            arabic_text = st.session_state.get('arabic_text', "")
+            if arabic_text and arabic_text != "Translation failed.":
+                # Ensure Arabic text displays right-to-left
+                st.markdown(f"<div style='direction: rtl; text-align: right;'>{arabic_text}</div>", unsafe_allow_html=True)
+            else:
+                st.info("Translation not available or failed.")
+            
+        
+        # Audio Player Section
         if st.session_state['audio_bytes']:
-             st.subheader("Audio Playback")
-             st.audio(st.session_state['audio_bytes'], format='audio/mp3')
-             st.info("The extracted text above is ready for listening.")
+            st.subheader("Audio Playback")
+            st.audio(st.session_state['audio_bytes'], format='audio/mp3')
+            st.info(f"The selected text ({st.session_state['tts_language_select']}) is ready for listening.")
         else:
-             st.info("Text extracted. Press 'Read Text Aloud (TTS)' to generate audio.")
+            st.info("Text extracted and translated. Select a language and press 'Read Text Aloud (TTS)'.")
 
     else:
-        st.info("Press 'Extract Text (EasyOCR)' to begin the analysis.")
+        st.info("Press 'Extract & Translate' to begin the analysis.")
 
 
 else:
-    st.info("No image file has been uploaded yet. Upload one to begin the OCR process.")
+    st.info("No image file has been uploaded yet. Upload one to begin the OCR and translation process.")
 
 
 # Footer 
 st.sidebar.markdown("### Application Information")
-st.sidebar.info("This application uses Streamlit for UI, EasyOCR for vision, and gTTS for speech generation.")
+st.sidebar.info("This application uses Streamlit for UI, EasyOCR for vision, **googletrans** for translation, and gTTS for speech generation.")
 st.sidebar.markdown("---")
 st.sidebar.markdown("Built with Streamlit and 📖")
