@@ -7,7 +7,6 @@ import easyocr
 from gtts import gTTS 
 from io import BytesIO 
 from googletrans import Translator
-# NEW IMPORT: Import the CV logic from the microservice file
 from cv_logic import classify_road_sign 
 
 
