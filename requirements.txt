@@ -1,0 +1,9 @@
+streamlit
+easyocr
+gTTS
+google-trans-new
+Pillow
+numpy
+opencv-python
+ultralytics
+torch
