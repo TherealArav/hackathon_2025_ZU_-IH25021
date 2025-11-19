@@ -1,4 +1,4 @@
-<h1>⚡ Fresh-Gens: Multi-Modal Image Analyzer </h1>  
+<h1>⚡ Fresh-Gens: Multi-Modal Image Analyzer  </h1>  
 
 <h2> Project Overview </h2>  
 
